@@ -1,10 +1,10 @@
 use libafl_bolts::rands::StdRand;
-use libafl_bolts::shmem::{ShMem, ShMemProvider, StdShMemProvider};
+use libafl_bolts::shmem::{ShMem, ShMemProvider, UnixShMemProvider};
 use libafl_bolts::tuples::tuple_list;
 use libafl_bolts::{current_nanos, AsSliceMut};
 use libafl::corpus::{Corpus, InMemoryCorpus, OnDiskCorpus};
 use libafl::events::SimpleEventManager;
-use libafl::executors::CommandExecutor;
+use libafl::executors::ForkserverExecutor;
 use libafl::feedbacks::{MaxMapFeedback, TimeFeedback, TimeoutFeedback};
 use libafl::inputs::BytesInput;
 use libafl::monitors::SimpleMonitor;
@@ -20,8 +20,6 @@ use libafl::observers::CanTrack;
 
 /// size of the shared memory mapping used as the coverage map
 const MAP_SIZE: usize = 65536;
-static mut SIGNALS: [u8; MAP_SIZE] = [0; MAP_SIZE];
-static mut SIGNALS_PTR: *mut u8 = unsafe { SIGNALS.as_mut_ptr() };
 
 fn main() -> Result<(), Error> {
     //
@@ -54,20 +52,19 @@ fn main() -> Result<(), Error> {
     // afl-clang-fast, if you use afl-clang-fast, you can use __AFL_SHM_ID to get the ptr to the
     // map
 
-    // // The shmem provider supported by AFL++ for shared memory
-    // let mut shmem_provider = StdShMemProvider::new()?;
+    // The unix shmem provider supported by AFL++ for shared memory
+    let mut shmem_provider = UnixShMemProvider::new().unwrap();
 
-    // // The coverage map shared between observer and executor
-    // let mut shmem = shmem_provider.new_shmem(MAP_SIZE)?;
-
-    // // let the forkserver know the shmid
-    // shmem.write_to_env("__AFL_SHM_ID")?;
-    // let shmem_buf = shmem.as_slice_mut();
+    // The coverage map shared between observer and executor
+    let mut shmem = shmem_provider.new_shmem(MAP_SIZE).unwrap();
+    // let the forkserver know the shmid
+    shmem.write_to_env("__AFL_SHM_ID").unwrap();
+    let shmem_buf = shmem.as_slice_mut();
 
     // Create an observation channel using the signals map
-    let edges_observer =
-        unsafe { HitcountsMapObserver::new(StdMapObserver::from_mut_ptr("signals", SIGNALS_PTR, SIGNALS.len())).track_indices() };
-
+    let edges_observer = unsafe {
+        HitcountsMapObserver::new(StdMapObserver::new("shared_mem", shmem_buf)).track_indices()
+    };
     //
     // Component: Feedback
     //
@@ -177,15 +174,15 @@ fn main() -> Result<(), Error> {
     // within the same process, eliminating a lot of the overhead associated with a fork/exec or
     // forkserver execution model.
     let timeout = Duration::from_secs(5);
-    let mut executor = CommandExecutor::builder()
+    let mut executor = ForkserverExecutor::builder()
         .program("./xpdf/install/bin/pdftotext")
-        .arg_input_file("test.pdf")
+        .parse_afl_cmdline(["@@"])
+        .coverage_map_size(MAP_SIZE)
         .timeout(timeout)
         .build(tuple_list!(time_observer, edges_observer))?;
 
     // In case the corpus is empty (i.e. on first run), load existing test cases from on-disk
     // corpus
-
     if state.corpus().count() < 1 {
         state
             .load_initial_inputs(&mut fuzzer, &mut executor, &mut mgr, &corpus_dirs)
