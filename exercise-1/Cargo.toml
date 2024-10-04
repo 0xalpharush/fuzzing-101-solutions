@@ -1,0 +1,12 @@
+[package]
+name = "exercise-1"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[build-dependencies]
+anyhow = "1.0"
+
+[dependencies]
+libafl = "0.13.2"
+libafl_bolts = "0.13.2"
